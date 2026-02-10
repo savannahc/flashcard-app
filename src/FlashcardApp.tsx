@@ -14,6 +14,7 @@ interface Module {
   name: string;
   cards: Flashcard[];
   lastScore: number | null;
+  incorrectCardIds: number[];
 }
 
 function ScoreRing({ score, size = 52 }: { score: number; size?: number }) {
@@ -74,6 +75,7 @@ export default function FlashcardApp() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [sessionResults, setSessionResults] = useState<Record<number, boolean>>({});
+  const [definitionFirst, setDefinitionFirst] = useState(false);
 
   useEffect(() => {
     const init = () => {
@@ -100,7 +102,17 @@ export default function FlashcardApp() {
           }
         }
 
-        loaded.push({ id: i, name: `Module ${i}`, cards, lastScore });
+        let incorrectCardIds: number[] = [];
+        const incorrectData = storage.get(`mod_${i}_incorrect`);
+        if (incorrectData) {
+          try {
+            incorrectCardIds = JSON.parse(incorrectData);
+          } catch {
+            // Invalid JSON
+          }
+        }
+
+        loaded.push({ id: i, name: `Module ${i}`, cards, lastScore, incorrectCardIds });
       }
       setModules(loaded);
       setStorageLoaded(true);
@@ -126,8 +138,9 @@ export default function FlashcardApp() {
           .filter((row) => row.length >= 2 && row[0] && row[1])
           .map((row, i) => ({ id: i, term: row[0].trim(), definition: row[1].trim() }));
         if (cards.length > 0) {
-          setModules((prev) => prev.map((m) => (m.id === moduleId ? { ...m, cards } : m)));
+          setModules((prev) => prev.map((m) => (m.id === moduleId ? { ...m, cards, incorrectCardIds: [] } : m)));
           storage.set(`mod_${moduleId}_cards`, JSON.stringify(cards));
+          storage.set(`mod_${moduleId}_incorrect`, JSON.stringify([]));
         }
       },
       skipEmptyLines: true,
@@ -146,6 +159,19 @@ export default function FlashcardApp() {
     setView("study");
   };
 
+  const startModuleIncorrect = (moduleId: number) => {
+    const mod = modules.find((m) => m.id === moduleId);
+    if (!mod || mod.incorrectCardIds.length === 0) return;
+    const incorrectCards = mod.cards.filter((c) => mod.incorrectCardIds.includes(c.id));
+    if (incorrectCards.length === 0) return;
+    setSelectedModuleId(moduleId);
+    setFlashcards(shuffleArray(incorrectCards));
+    setCurrentIndex(0);
+    setIsFlipped(false);
+    setSessionResults({});
+    setView("study");
+  };
+
   const handleAnswer = (correct: boolean) => {
     const newResults = { ...sessionResults, [flashcards[currentIndex].id]: correct };
     setSessionResults(newResults);
@@ -156,10 +182,12 @@ export default function FlashcardApp() {
     } else {
       const correctCount = Object.values(newResults).filter(Boolean).length;
       const score = Math.round((correctCount / flashcards.length) * 100);
+      const incorrectIds = Object.entries(newResults).filter(([, v]) => !v).map(([k]) => Number(k));
       setModules((prev) =>
-        prev.map((m) => (m.id === selectedModuleId ? { ...m, lastScore: score } : m))
+        prev.map((m) => (m.id === selectedModuleId ? { ...m, lastScore: score, incorrectCardIds: incorrectIds } : m))
       );
       storage.set(`mod_${selectedModuleId}_score`, JSON.stringify(score));
+      storage.set(`mod_${selectedModuleId}_incorrect`, JSON.stringify(incorrectIds));
       setView("results");
     }
   };
@@ -257,6 +285,34 @@ export default function FlashcardApp() {
                       >
                         Study
                       </button>
+                      {mod.incorrectCardIds.length > 0 && (
+                        <button
+                          onClick={() => startModuleIncorrect(mod.id)}
+                          className="flex-shrink-0 text-xs font-semibold py-2 px-3 rounded-lg transition-all flex items-center gap-1.5"
+                          style={{
+                            background: "#fefce8",
+                            color: "#a16207",
+                            border: "1px solid #fde047",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "#fef9c3")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "#fefce8")}
+                        >
+                          Review Missed
+                          <span
+                            className="inline-flex items-center justify-center rounded-full text-xs font-bold"
+                            style={{
+                              background: "#fde047",
+                              color: "#a16207",
+                              minWidth: 18,
+                              height: 18,
+                              padding: "0 5px",
+                              fontSize: 10,
+                            }}
+                          >
+                            {mod.incorrectCardIds.length}
+                          </span>
+                        </button>
+                      )}
                       <label className="flex-shrink-0 cursor-pointer">
                         <input
                           type="file"
@@ -321,6 +377,32 @@ export default function FlashcardApp() {
             <span className="text-xs" style={{ color: "#94a3b8" }}>{currentIndex + 1} / {flashcards.length}</span>
           </div>
 
+          {/* Term/Definition toggle */}
+          <div className="flex justify-center mb-4">
+            <div className="inline-flex rounded-lg overflow-hidden" style={{ background: "#f1f5f9", padding: 2 }}>
+              <button
+                onClick={() => setDefinitionFirst(false)}
+                className="text-xs font-semibold px-3 py-1 rounded-md transition-all"
+                style={{
+                  background: !definitionFirst ? "#1e293b" : "transparent",
+                  color: !definitionFirst ? "#fff" : "#64748b",
+                }}
+              >
+                Term First
+              </button>
+              <button
+                onClick={() => setDefinitionFirst(true)}
+                className="text-xs font-semibold px-3 py-1 rounded-md transition-all"
+                style={{
+                  background: definitionFirst ? "#1e293b" : "transparent",
+                  color: definitionFirst ? "#fff" : "#64748b",
+                }}
+              >
+                Definition First
+              </button>
+            </div>
+          </div>
+
           {/* Progress bar */}
           <div className="w-full rounded-full mb-7" style={{ height: 3, background: "#e2e8f0" }}>
             <div
@@ -356,20 +438,26 @@ export default function FlashcardApp() {
             }}
           >
             {/* Label badge */}
-            <span
-              className="text-xs font-bold uppercase tracking-widest mb-5 px-2.5 py-0.5 rounded-full"
-              style={{
-                color: isFlipped ? "#059669" : "#64748b",
-                background: isFlipped ? "#d1fae5" : "#f1f5f9",
-                letterSpacing: "0.1em",
-              }}
-            >
-              {isFlipped ? "Definition" : "Term"}
-            </span>
+            {(() => {
+              const showingDefinition = definitionFirst ? !isFlipped : isFlipped;
+              const label = showingDefinition ? "Definition" : "Term";
+              return (
+                <span
+                  className="text-xs font-bold uppercase tracking-widest mb-5 px-2.5 py-0.5 rounded-full"
+                  style={{
+                    color: showingDefinition ? "#059669" : "#64748b",
+                    background: showingDefinition ? "#d1fae5" : "#f1f5f9",
+                    letterSpacing: "0.1em",
+                  }}
+                >
+                  {label}
+                </span>
+              );
+            })()}
 
             {/* Card content */}
             <p className="font-semibold leading-snug" style={{ color: "#1e293b", fontSize: 20 }}>
-              {isFlipped ? card.definition : card.term}
+              {(definitionFirst ? !isFlipped : isFlipped) ? card.definition : card.term}
             </p>
 
             {/* Tap hint */}
